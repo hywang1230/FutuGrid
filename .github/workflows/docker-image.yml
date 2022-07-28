@@ -34,5 +34,5 @@ jobs:  # workflow中的job
         with:
           context: .
           push: true
-          tags: [latest]
+          tags: ["latest"]
           labels: ${{ steps.meta.outputs.labels }}
