@@ -61,16 +61,16 @@ insert into grid_config(market, base_price, rise_amplitude, fall_amplitude, ampl
 ### Step3：创建配置文件config.ini
 ```ini
 [db config]
-host=192.168.1.254
+host=127.0.0.1
 port=3306
 user=root
-password=Abc123789
+password=123456
 database=futu_grid
 
 [futu config]
-host=192.168.1.254
+host=127.0.0.1
 port=11111
-unlock_password_md5=55587a910882016321201e6ebbc9f595
+unlock_password_md5=e10adc3949ba59abbe56e057f20f883e
 ```
 #### unlock_password_md5生成方式
 1. 打开https://tool.chinaz.com/tools/md5.aspx 
