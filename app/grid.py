@@ -4,6 +4,7 @@ import pandas as pd
 from app.log import *
 import datetime
 from app.config import *
+from app.stock_helper import *
 
 host = get_config()['futu config']['host']
 port = int(get_config()['futu config']['port'])
@@ -70,20 +71,11 @@ class TradeOrderHandler(TradeOrderHandlerBase):
                     qty = content['dealt_qty'][0]
                     is_sell = content['trd_side'][0] in ('SELL', 'SELL_SHORT')
 
-                    if is_sell:
-                        base_price = base_price * (1 + float(grid_config.rise_amplitude)) if grid_config.amplitude_type == 1 \
-                            else price + float(grid_config.rise_amplitude)
-                    else:
-                        base_price = base_price * (
-                                    1 - float(grid_config.rise_amplitude)) if grid_config.amplitude_type == 1 \
-                            else price - float(grid_config.rise_amplitude)
+                    base_price = calculate_amplitude_price(base_price, grid_config, is_sell)
 
                     update_base_price_and_reminder_quantity(stock_code, base_price, qty, is_sell)
 
-                    total = price * qty
-                    fee = max(0.99, round(qty * 0.0049, 2)) + 1 + round(qty * 0.003, 2) \
-                        + (max(0.01, round(total * 0.0000229, 2)) if is_sell else 0) \
-                        + (min(5.95, max(0.01, round(qty * 0.000119, 2))) if is_sell else 0)
+                    fee = calculate_fee(price, qty, is_sell, grid_config.market)
 
                     update_trade_fee(order_id, round(fee, 2))
 
@@ -93,14 +85,16 @@ class TradeOrderHandler(TradeOrderHandlerBase):
 quote_ctx = OpenQuoteContext(host=host, port=port)
 quote_ctx.set_handler(PriceReminder())
 
-trd_ctx = OpenSecTradeContext(filter_trdmarket=TrdMarket.US, host=host, port=port,
-                              security_firm=SecurityFirm.FUTUSECURITIES)
-trd_ctx.set_handler(TradeOrderHandler())
+trd_ctx = {'US': OpenSecTradeContext(filter_trdmarket=TrdMarket.US, host=host, port=port,
+                                     security_firm=SecurityFirm.FUTUSECURITIES),
+           'HK': OpenSecTradeContext(filter_trdmarket=TrdMarket.HK, host=host, port=port,
+                                     security_firm=SecurityFirm.FUTUSECURITIES)}
+trd_ctx['US'].set_handler(TradeOrderHandler())
+trd_ctx['HK'].set_handler(TradeOrderHandler())
 
 
 def reset_price_reminder(stock_code, price):
     grid_config = query_grid_config(stock_code)
-    price = float(price)
 
     if grid_config is None:
         logging.info('no grid config of stock_code[%s]', stock_code)
@@ -110,8 +104,7 @@ def reset_price_reminder(stock_code, price):
     if ret_ask == RET_OK:
         # set price up
         if grid_config.remaining_sell_quantity > 0:
-            reminder_price = price * (1 + float(grid_config.rise_amplitude)) if grid_config.amplitude_type == 1 \
-                else price + float(grid_config.rise_amplitude)
+            reminder_price = calculate_amplitude_price(price, grid_config, True)
             ret_ask, ask_data = quote_ctx.set_price_reminder(code=stock_code, op=SetPriceReminderOp.ADD,
                                                              reminder_type=PriceReminderType.PRICE_UP,
                                                              reminder_freq=PriceReminderFreq.ONCE,
@@ -123,8 +116,7 @@ def reset_price_reminder(stock_code, price):
 
         # set price down
         if grid_config.remaining_buy_quantity > 0:
-            reminder_price = price * (1 - float(grid_config.rise_amplitude)) if grid_config.amplitude_type == 1 \
-                else price - float(grid_config.rise_amplitude)
+            reminder_price = calculate_amplitude_price(price, grid_config, False)
             ret_ask, ask_data = quote_ctx.set_price_reminder(code=stock_code, op=SetPriceReminderOp.ADD,
                                                              reminder_type=PriceReminderType.PRICE_DOWN,
                                                              reminder_freq=PriceReminderFreq.ONCE,
@@ -139,17 +131,17 @@ def reset_price_reminder(stock_code, price):
 
 
 def order(stock_code, price, is_sell):
-    # check now is in trade time
-    now = datetime.datetime.now().strftime('%H:%M:%S')
-    if '04:00:00' < now < '21:30:00':
-        logging.info('%s is not in trade time', now)
-        return False
-
     # get stock code grid config
     grid_config = query_grid_config(stock_code)
-
     if grid_config is None:
         logging.info('no grid config of stock_code[%s]', stock_code)
+        return False
+
+    # check now is in trade time
+    now = datetime.datetime.now().strftime('%H:%M:%S')
+    if (grid_config.market == 'US' and '04:00:00' < now < '21:30:00') \
+            or (grid_config.market == 'HK' and (now < '09:30:00' or now > '16:00:00')):
+        logging.info('%s is not in trade time', now)
         return False
 
     # check reminder quantity > 0
@@ -159,14 +151,15 @@ def order(stock_code, price, is_sell):
         return False
 
     # only support us
-    ret, data = trd_ctx.unlock_trade(password_md5=unlock_password_md5)  # 若使用真实账户下单，需先对账户进行解锁。
+    ret, data = trd_ctx[grid_config.market].unlock_trade(password_md5=unlock_password_md5)  # 若使用真实账户下单，需先对账户进行解锁。
     success = False
     if ret == RET_OK:
         trd_side = TrdSide.SELL if is_sell else TrdSide.BUY
         qty = grid_config.single_sell_quantity if is_sell else grid_config.single_buy_quantity
 
-        ret, data = trd_ctx.place_order(price=price, qty=qty, code=stock_code, trd_side=trd_side,
-                                        fill_outside_rth=False, order_type=OrderType.MARKET, trd_env=TrdEnv.REAL)
+        ret, data = trd_ctx[grid_config.market].place_order(price=price, qty=qty, code=stock_code, trd_side=trd_side,
+                                                            fill_outside_rth=False, order_type=OrderType.MARKET,
+                                                            trd_env=TrdEnv.REAL)
         if ret == RET_OK:
             logging.info('place order success, stock_code={}, price={}, quantity={}, is_sell={}'.format(stock_code,
                                                                                                         price, qty,
@@ -183,37 +176,8 @@ def order(stock_code, price, is_sell):
     return success
 
 
-def query_today_deal_list():
-    ret, data = trd_ctx.deal_list_query()
-    if ret == RET_OK:
-        logging.info('today deal list: %s', data)
-        if data.shape[0] > 0:  # 如果成交列表不为空
-            for i in range(len(data['order_id'])):
-                stock_code = data['code'][i]
-                price = data['price'][i]
-                order_id = data['order_id'][i]
-
-                update_trade_order_status(order_id, price, 'FILLED_ALL', data['create_time'][i])
-
-                success = reset_price_reminder(stock_code, price)
-                print(success)
-    else:
-        logging.info('deal_list_query error: ', data)
-
-
 def start():
     grid_configs = GridConfig.select()
 
     for grid_config in grid_configs:
         reset_price_reminder(grid_config.stock_code, float(grid_config.base_price))
-
-
-def close():
-    # clear all reminder
-    grid_configs = GridConfig.select()
-
-    for grid_config in grid_configs:
-        quote_ctx.set_price_reminder(code=grid_config.stock_code, op=SetPriceReminderOp.DEL_ALL)
-
-    trd_ctx.close()
-    quote_ctx.close()
