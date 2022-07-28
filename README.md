@@ -81,5 +81,5 @@ unlock_password_md5=e10adc3949ba59abbe56e057f20f883e
 
 ### Step5：部署docker
 ```docker
-docker run -d --restart=always -v /app/config.ini:/app/config.ini /app/rsa:/app/config.ini  --name="futu_grid" pionnerwang/futu_grid
+docker run -d --restart=always -v /app/config.ini:/app/config.ini /app/rsa:/app/rsa  --name="futu_grid" pionnerwang/futu_grid
 ```
