@@ -8,6 +8,9 @@
 * 美股（仅支持盘中交易）
 
 ## 使用 
+### 前置条件
+自行下载安装FutuOpenD以及MySQL数据库
+
 ### Step1：创建mysql数据库导入，执行sql
 ```sql
 CREATE TABLE `grid_config` (
